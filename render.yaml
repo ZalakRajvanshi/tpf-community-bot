@@ -1,0 +1,14 @@
+# Render Blueprint — deploys the bot as a Python Web Service.
+# https://render.com/docs/blueprint-spec
+services:
+  - type: web
+    name: tpf-community-bot
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app
+    envVars:
+      - key: SLACK_BOT_TOKEN
+        sync: false
+      - key: SLACK_SIGNING_SECRET
+        sync: false
