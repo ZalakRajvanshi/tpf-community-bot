@@ -43,14 +43,10 @@ _bot_user_id = None
 
 
 WELCOME_MESSAGE = (
-    "👋 Welcome <@{user_id}> to The Product Folks!\n\n"
-    "We're excited to have you here.\n\n"
-    "📚 *Product Academy*\n"
-    "https://www.theproductfolks.com/product-academy\n\n"
-    "💼 *Product Management Jobs*\n"
-    "https://www.theproductfolks.com/product-management-jobs\n\n"
-    "🌐 *Explore The Product Folks*\n"
-    "https://www.theproductfolks.com\n\n"
+    "👋 Welcome <@{user_id}> to The Product Folks! We're excited to have you here.\n\n"
+    "📚 <https://www.theproductfolks.com/product-academy|Product Academy>\n"
+    "💼 <https://www.theproductfolks.com/product-management-jobs|Product Management Jobs>\n"
+    "🌐 <https://www.theproductfolks.com|Explore The Product Folks>\n\n"
     "Feel free to introduce yourself and start engaging with the community."
 )
 
@@ -71,6 +67,8 @@ def post_welcome_message(channel_id, user_id):
         slack_client.chat_postMessage(
             channel=channel_id,
             text=WELCOME_MESSAGE.format(user_id=user_id),
+            unfurl_links=False,
+            unfurl_media=False,
         )
         logger.info("Posted welcome for user %s in channel %s", user_id, channel_id)
     except SlackApiError as e:
