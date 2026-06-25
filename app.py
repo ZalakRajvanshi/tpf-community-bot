@@ -43,11 +43,19 @@ _bot_user_id = None
 
 
 WELCOME_MESSAGE = (
-    "👋 Welcome <@{user_id}> to The Product Folks! We're excited to have you here.\n\n"
-    "📚 <https://www.theproductfolks.com/product-academy|Product Academy>\n"
-    "💼 <https://www.theproductfolks.com/product-management-jobs|Product Management Jobs>\n"
-    "🌐 <https://www.theproductfolks.com|Explore The Product Folks>\n\n"
-    "Feel free to introduce yourself and start engaging with the community."
+    "👋 Hey <@{user_id}>! So glad you're here 🎉\n\n"
+    "You're now part of a community of people who love building products and "
+    "helping each other grow. Look around to see what others are working on, find "
+    "opportunities near you and meet folks in your city. Got a question or "
+    "something you're building? Share it. The good stuff happens when people "
+    "jump in.\n\n"
+    "*📌 Resources*\n"
+    "📅 *Events*: Join product events happening near your city\n"
+    "💼 *Jobs*: <https://www.theproductfolks.com/product-management-jobs|"
+    "Discover relevant job opportunities>\n"
+    "📚 *Academy*: <https://www.theproductfolks.com/product-academy|"
+    "Learn AI & build better products with practical courses>\n\n"
+    "Jump in, introduce yourself and tell us what you're building 🚀"
 )
 
 

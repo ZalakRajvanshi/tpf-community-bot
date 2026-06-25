@@ -62,7 +62,7 @@ From **Basic Information → App Credentials**, copy the **Signing Secret**.
 Invite the bot to the private channel:
 
 ```
-/invite @TPF Community Bot
+/invite @Foldie
 ```
 
 > Note: `member_joined_channel` events for a channel are only delivered after the
