@@ -1,17 +1,30 @@
-"""TPF Community Bot — Slack welcome automation (Phase 1 demo).
+"""TPF Community Bot — human-in-the-loop Slack monitoring assistant.
 
-Listens for `member_joined_channel` events via the Slack Events API and posts a
-welcome message that mentions the new member in the same channel.
+The bot observes Slack activity and gives a designated Human POC the context to
+act. It never messages members or moderates on its own. Its jobs are:
+
+  1. Watch channel messages and keep a rolling record (for context/digests).
+  2. When a new member joins the workspace, DM the POC so they can welcome them
+     personally — no automated welcome is ever sent.
+  3. On request, build a daily digest (official updates + out-of-place activity)
+     and DM it to the POC.
+
+All user-facing decisions stay with the Human POC.
 """
 
 import logging
 import os
+import time
+from datetime import datetime, timezone
 
 from dotenv import load_dotenv
 from flask import Flask, jsonify, request
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 
+import notify
+import store
+from analysis import build_digest, format_digest
 from slack_verify import is_valid_slack_request
 
 load_dotenv()
@@ -24,39 +37,28 @@ logger = logging.getLogger("tpf-community-bot")
 
 SLACK_BOT_TOKEN = os.environ.get("SLACK_BOT_TOKEN")
 SLACK_SIGNING_SECRET = os.environ.get("SLACK_SIGNING_SECRET")
+DIGEST_TRIGGER_TOKEN = os.environ.get("DIGEST_TRIGGER_TOKEN")
+DIGEST_WINDOW_HOURS = int(os.environ.get("DIGEST_WINDOW_HOURS", "24"))
 
 if not SLACK_BOT_TOKEN:
-    logger.warning("SLACK_BOT_TOKEN is not set — the bot cannot post messages.")
+    logger.warning("SLACK_BOT_TOKEN is not set — the bot cannot read or DM.")
 if not SLACK_SIGNING_SECRET:
     logger.warning("SLACK_SIGNING_SECRET is not set — request verification will fail.")
+if not notify.HUMAN_POC_USER_ID:
+    logger.warning("HUMAN_POC_USER_ID is not set — the POC cannot be notified.")
 
 slack_client = WebClient(token=SLACK_BOT_TOKEN)
 
 app = Flask(__name__)
 
-# Remember processed event IDs so Slack's automatic retries don't trigger
-# duplicate welcome messages. In-memory is fine for a single-instance POC.
+# Persistent store for observed messages and new-member dedup.
+store.init_db()
+
+# Remember processed event IDs so Slack's automatic retries aren't handled twice.
 _processed_events = set()
 
-# Cache of the bot's own user ID so we don't welcome the bot itself.
+# Cache of the bot's own user ID so we don't record the bot's own messages.
 _bot_user_id = None
-
-
-WELCOME_MESSAGE = (
-    "👋 Hey <@{user_id}>! So glad you're here 🎉\n\n"
-    "You're now part of a community of people who love building products and "
-    "helping each other grow. Look around to see what others are working on, find "
-    "opportunities near you and meet folks in your city. Got a question or "
-    "something you're building? Share it. The good stuff happens when people "
-    "jump in.\n\n"
-    "*📌 Resources*\n"
-    "📅 *Events*: Join product events happening near your city\n"
-    "💼 *Jobs*: <https://www.theproductfolks.com/product-management-jobs|"
-    "Discover relevant job opportunities>\n"
-    "📚 *Academy*: <https://www.theproductfolks.com/product-academy|"
-    "Learn AI & build better products with practical courses>\n\n"
-    "Jump in, introduce yourself and tell us what you're building 🚀"
-)
 
 
 def get_bot_user_id():
@@ -70,17 +72,52 @@ def get_bot_user_id():
     return _bot_user_id
 
 
-def post_welcome_message(channel_id, user_id):
-    try:
-        slack_client.chat_postMessage(
-            channel=channel_id,
-            text=WELCOME_MESSAGE.format(user_id=user_id),
-            unfurl_links=False,
-            unfurl_media=False,
-        )
-        logger.info("Posted welcome for user %s in channel %s", user_id, channel_id)
-    except SlackApiError as e:
-        logger.error("Failed to post welcome message: %s", e.response.get("error"))
+# --------------------------------------------------------------------------- #
+# Event handlers
+# --------------------------------------------------------------------------- #
+
+
+def handle_message(event):
+    """Record a real user message for context. Ignore bot/system messages."""
+    # Subtypes (joins, edits, deletes, bot posts...) aren't human conversation.
+    if event.get("subtype") or event.get("bot_id"):
+        return
+
+    user_id = event.get("user")
+    channel_id = event.get("channel")
+    if not user_id or not channel_id:
+        return
+    if user_id == get_bot_user_id():
+        return
+
+    store.save_message(
+        channel_id=channel_id,
+        user_id=user_id,
+        text=event.get("text", ""),
+        ts=event.get("ts"),
+    )
+
+
+def handle_team_join(event):
+    """A new member joined the workspace — inform the POC, don't message them."""
+    user = event.get("user", {})
+    user_id = user.get("id") if isinstance(user, dict) else user
+    if not user_id:
+        return
+
+    # Dedup against Slack retries: only notify the first time we see this member.
+    if not store.record_member(user_id):
+        logger.info("Already notified POC about member %s; skipping.", user_id)
+        return
+
+    joined_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    if notify.notify_new_member(slack_client, user_id, joined_at):
+        logger.info("Notified POC about new member %s.", user_id)
+
+
+# --------------------------------------------------------------------------- #
+# Routes
+# --------------------------------------------------------------------------- #
 
 
 @app.route("/", methods=["GET"])
@@ -119,17 +156,48 @@ def slack_events():
             _processed_events.add(event_id)
 
         event = payload.get("event", {})
-        if event.get("type") == "member_joined_channel":
-            user_id = event.get("user")
-            channel_id = event.get("channel")
+        event_type = event.get("type")
 
-            if user_id and user_id == get_bot_user_id():
-                logger.info("Ignoring join event for the bot itself.")
-            elif user_id and channel_id:
-                post_welcome_message(channel_id, user_id)
+        if event_type == "message":
+            handle_message(event)
+        elif event_type == "team_join":
+            handle_team_join(event)
 
     # Always 200 quickly so Slack doesn't retry.
     return jsonify(ok=True)
+
+
+@app.route("/tasks/daily-digest", methods=["GET", "POST"])
+def daily_digest():
+    """Build the daily digest and DM it to the Human POC.
+
+    Triggered manually (or later by a scheduler/cron). Protect it by setting
+    DIGEST_TRIGGER_TOKEN and passing it as ?token=... or an X-Digest-Token
+    header. If the token isn't configured, the endpoint is open (testing only).
+    """
+    if DIGEST_TRIGGER_TOKEN:
+        supplied = request.args.get("token") or request.headers.get("X-Digest-Token")
+        if supplied != DIGEST_TRIGGER_TOKEN:
+            return jsonify(error="unauthorized"), 401
+
+    since = time.time() - DIGEST_WINDOW_HOURS * 3600
+    messages = store.get_messages_since(since)
+
+    digest = build_digest(
+        messages,
+        channel_name_of=lambda cid: notify.channel_name_of(slack_client, cid),
+        display_name_of=lambda uid: notify.display_name_of(slack_client, uid),
+    )
+    text = format_digest(digest, period_label=f"the last {DIGEST_WINDOW_HOURS} hours")
+
+    delivered = notify.dm_poc(slack_client, text)
+    return jsonify(
+        ok=True,
+        delivered_to_poc=delivered,
+        messages_observed=digest["total"],
+        official=len(digest["official"]),
+        out_of_place=len(digest["out_of_place"]),
+    )
 
 
 if __name__ == "__main__":
