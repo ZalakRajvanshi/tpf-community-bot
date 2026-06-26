@@ -46,9 +46,11 @@ def init_db():
         )
         conn.execute(
             """
-            CREATE TABLE IF NOT EXISTS members (
-                user_id   TEXT PRIMARY KEY,
-                joined_at REAL NOT NULL
+            CREATE TABLE IF NOT EXISTS channel_joins (
+                user_id    TEXT NOT NULL,
+                channel_id TEXT NOT NULL,
+                joined_at  REAL NOT NULL,
+                PRIMARY KEY (user_id, channel_id)
             )
             """
         )
@@ -75,15 +77,16 @@ def get_messages_since(epoch_seconds):
     return [dict(r) for r in rows]
 
 
-def record_member(user_id):
-    """Remember a workspace join so we don't re-notify on Slack retries.
+def record_join(user_id, channel_id):
+    """Remember that a user joined a channel so we don't re-notify on retries.
 
-    Returns True if this is the first time we've seen this member (i.e. the
-    POC should be notified), False if we've already recorded them.
+    Returns True the first time this (user, channel) pair is seen — i.e. the
+    POC should be notified — and False if we've already recorded it.
     """
     with _connect() as conn:
         cur = conn.execute(
-            "INSERT OR IGNORE INTO members (user_id, joined_at) VALUES (?, ?)",
-            (user_id, time.time()),
+            "INSERT OR IGNORE INTO channel_joins (user_id, channel_id, joined_at) "
+            "VALUES (?, ?, ?)",
+            (user_id, channel_id, time.time()),
         )
         return cur.rowcount > 0

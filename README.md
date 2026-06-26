@@ -8,11 +8,12 @@ It never messages members or moderates on its own.
 What it does:
 
 1. **Monitors channel messages** and keeps a rolling record for context.
-2. **New-member alerts** — when someone joins the workspace, it DMs the Human
-   POC (name, join time, profile) so the POC can welcome them *personally*. No
-   automated welcome is ever sent.
-3. **Daily digest** — on request, it DMs the POC a report of **official
-   updates** and **out-of-context activity** flagged by simple heuristics.
+2. **New-member alerts** — when a member joins a channel, it DMs the Human POC
+   in real time (name, **which channel**, join time, profile) so the POC can
+   welcome them *personally*. No automated welcome is ever sent.
+3. **Per-channel daily digest** — on request, it DMs the POC a report broken
+   down **by channel**: what happened in each, plus **official updates** and
+   **out-of-context activity** (with user + channel) flagged by simple heuristics.
 
 > Understanding is currently rule-based (no AI). The logic lives in one place
 > (`analysis.py`) behind clean function boundaries, so a language model can be
@@ -24,7 +25,7 @@ What it does:
 
 ```
 Slack workspace activity
-        │  (messages, team_join)
+        │  (messages, member_joined_channel)
         ▼
 Slack Events API  ──POST──▶  /slack/events   (signature verified)
                                    │
@@ -73,9 +74,9 @@ In **OAuth & Permissions → Bot Token Scopes**, add:
 - `chat:write` — DM the POC
 - `im:write` — open a DM channel with the POC
 - `channels:history`, `groups:history` — read channel messages it monitors
-- `channels:read`, `groups:read` — resolve channel names
+- `channels:read`, `groups:read` — resolve channel names + receive
+  `member_joined_channel` events
 - `users:read`, `users:read.email` — resolve member names / profile in alerts
-- `team:read` — receive `team_join` events
 
 Install (or reinstall) the app after changing scopes, then copy the
 **Bot User OAuth Token** (`xoxb-...`).
@@ -100,7 +101,7 @@ Under **Event Subscriptions**:
    automatically and the URL shows **Verified**.)
 3. Under **Subscribe to bot events**, add:
    - `message.channels` (and `message.groups` for private channels)
-   - `team_join`
+   - `member_joined_channel`
 4. Save changes (reinstall the app if Slack prompts you).
 
 ---

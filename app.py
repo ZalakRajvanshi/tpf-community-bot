@@ -4,10 +4,10 @@ The bot observes Slack activity and gives a designated Human POC the context to
 act. It never messages members or moderates on its own. Its jobs are:
 
   1. Watch channel messages and keep a rolling record (for context/digests).
-  2. When a new member joins the workspace, DM the POC so they can welcome them
-     personally — no automated welcome is ever sent.
-  3. On request, build a daily digest (official updates + out-of-place activity)
-     and DM it to the POC.
+  2. When a member joins a channel, DM the POC in real time (name + channel) so
+     they can welcome them personally — no automated welcome is ever sent.
+  3. On request, build a per-channel daily digest (what happened in each channel,
+     plus official updates and out-of-place activity) and DM it to the POC.
 
 All user-facing decisions stay with the Human POC.
 """
@@ -98,21 +98,26 @@ def handle_message(event):
     )
 
 
-def handle_team_join(event):
-    """A new member joined the workspace — inform the POC, don't message them."""
-    user = event.get("user", {})
-    user_id = user.get("id") if isinstance(user, dict) else user
-    if not user_id:
+def handle_member_joined_channel(event):
+    """A member joined a channel — DM the POC in real time so they can welcome
+    them. We never message the member ourselves."""
+    user_id = event.get("user")
+    channel_id = event.get("channel")
+    if not user_id or not channel_id:
         return
+    if user_id == get_bot_user_id():
+        return  # Don't alert when the bot itself is added to a channel.
 
-    # Dedup against Slack retries: only notify the first time we see this member.
-    if not store.record_member(user_id):
-        logger.info("Already notified POC about member %s; skipping.", user_id)
+    # Dedup against Slack retries: only notify the first time for this pair.
+    if not store.record_join(user_id, channel_id):
+        logger.info(
+            "Already notified POC about %s joining %s; skipping.", user_id, channel_id
+        )
         return
 
     joined_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    if notify.notify_new_member(slack_client, user_id, joined_at):
-        logger.info("Notified POC about new member %s.", user_id)
+    if notify.notify_new_member(slack_client, user_id, channel_id, joined_at):
+        logger.info("Notified POC: %s joined channel %s.", user_id, channel_id)
 
 
 # --------------------------------------------------------------------------- #
@@ -160,8 +165,8 @@ def slack_events():
 
         if event_type == "message":
             handle_message(event)
-        elif event_type == "team_join":
-            handle_team_join(event)
+        elif event_type == "member_joined_channel":
+            handle_member_joined_channel(event)
 
     # Always 200 quickly so Slack doesn't retry.
     return jsonify(ok=True)

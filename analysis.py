@@ -88,7 +88,11 @@ def _shorten(text, limit=140):
 
 
 def build_digest(messages, channel_name_of, display_name_of):
-    """Group classified messages into the two digest sections.
+    """Build a per-channel end-of-day report.
+
+    Groups all observed messages by channel and, for each channel, records how
+    much happened plus anything flagged as an official update or as out of
+    place (with the user who posted it).
 
     Args:
         messages: list of dicts with channel_id, user_id, text, ts.
@@ -98,59 +102,100 @@ def build_digest(messages, channel_name_of, display_name_of):
     Returns a dict::
 
         {
-          "official":     [ {channel, user, text}, ... ],
-          "out_of_place": [ {channel, user, text, reason}, ... ],
+          "channels": [
+            {
+              "channel": str,
+              "message_count": int,
+              "active_users": int,
+              "official":     [ {user, text}, ... ],
+              "out_of_place": [ {user, text, reason}, ... ],
+            }, ...
+          ],
           "total": int,
         }
     """
-    official = []
-    out_of_place = []
+    by_channel = {}
 
     for m in messages:
-        channel = channel_name_of(m.get("channel_id"))
+        channel_id = m.get("channel_id")
+        channel = channel_name_of(channel_id)
         user = display_name_of(m.get("user_id"))
-        verdict = classify_message(m.get("text"), channel)
 
+        bucket = by_channel.setdefault(
+            channel_id,
+            {
+                "channel": channel,
+                "message_count": 0,
+                "users": set(),
+                "official": [],
+                "out_of_place": [],
+            },
+        )
+        bucket["message_count"] += 1
+        bucket["users"].add(m.get("user_id"))
+
+        verdict = classify_message(m.get("text"), channel)
         if verdict["official"]:
-            official.append(
-                {"channel": channel, "user": user, "text": _shorten(m.get("text"))}
-            )
+            bucket["official"].append({"user": user, "text": _shorten(m.get("text"))})
         if verdict["out_of_place"]:
-            out_of_place.append(
+            bucket["out_of_place"].append(
                 {
-                    "channel": channel,
                     "user": user,
                     "text": _shorten(m.get("text")),
                     "reason": verdict["out_of_place"],
                 }
             )
 
-    return {"official": official, "out_of_place": out_of_place, "total": len(messages)}
+    # Sort channels by how busy they were, most active first.
+    channels = []
+    for bucket in by_channel.values():
+        channels.append(
+            {
+                "channel": bucket["channel"],
+                "message_count": bucket["message_count"],
+                "active_users": len(bucket["users"]),
+                "official": bucket["official"],
+                "out_of_place": bucket["out_of_place"],
+            }
+        )
+    channels.sort(key=lambda c: c["message_count"], reverse=True)
+
+    return {"channels": channels, "total": len(messages)}
 
 
 def format_digest(digest, period_label="the last 24 hours"):
-    """Render the digest dict as Slack markdown for the POC DM."""
+    """Render the per-channel digest as Slack markdown for the POC DM."""
     lines = [f"🗒️ *Daily digest* — {period_label}"]
-    lines.append(f"_Observed {digest['total']} message(s)._\n")
+    lines.append(
+        f"_Observed {digest['total']} message(s) across "
+        f"{len(digest['channels'])} channel(s)._"
+    )
 
-    # Section A — official updates.
-    lines.append("*A. Official Updates*")
-    if digest["official"]:
-        for item in digest["official"]:
-            lines.append(f"• *#{item['channel']}* — {item['user']}: {item['text']}")
-    else:
-        lines.append("_Nothing flagged as an official update._")
+    if not digest["channels"]:
+        lines.append("\n_No channel activity to report._")
+        return "\n".join(lines)
 
-    # Section B — out-of-place activity.
-    lines.append("\n*B. Out-of-Context Activity*")
-    if digest["out_of_place"]:
-        for item in digest["out_of_place"]:
-            lines.append(
-                f"• *#{item['channel']}* — {item['user']}: {item['text']}\n"
-                f"   ↳ _Why:_ {item['reason']}"
-            )
-    else:
-        lines.append("_Nothing looked out of place._")
+    for ch in digest["channels"]:
+        lines.append(
+            f"\n*#{ch['channel']}* — {ch['message_count']} message(s), "
+            f"{ch['active_users']} member(s) active"
+        )
+
+        if ch["official"]:
+            lines.append("  📢 *Official / noteworthy:*")
+            for item in ch["official"]:
+                lines.append(f"   • {item['user']}: {item['text']}")
+
+        if ch["out_of_place"]:
+            lines.append("  ⚠️ *Looks out of place:*")
+            for item in ch["out_of_place"]:
+                lines.append(
+                    f"   • {item['user']}: {item['text']}\n"
+                    f"      ↳ _Why:_ {item['reason']}"
+                )
+
+        if not ch["official"] and not ch["out_of_place"]:
+            lines.append("  _Normal activity, nothing flagged._")
 
     lines.append(
         "\n_These are heuristic flags for your review — no action was taken. "

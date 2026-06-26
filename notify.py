@@ -84,9 +84,13 @@ def dm_poc(client, text):
         return False
 
 
-def notify_new_member(client, user_id, joined_at_iso):
-    """DM the POC that a new member joined so they can welcome them personally."""
+def notify_new_member(client, user_id, channel_id, joined_at_iso):
+    """DM the POC that a member joined a channel, so they can welcome them.
+
+    Fires in real time at join time and names the channel they joined.
+    """
     name = display_name_of(client, user_id)
+    channel = channel_name_of(client, channel_id)
     profile_line = ""
     try:
         info = client.users_info(user=user_id).get("user", {})
@@ -104,9 +108,10 @@ def notify_new_member(client, user_id, joined_at_iso):
         pass  # Profile details are best-effort.
 
     text = (
-        "🙋 *New member joined the workspace*\n"
+        "🙋 *New member joined*\n"
         f"• *Name:* {name} (<@{user_id}>)\n"
-        f"• *Joined:* {joined_at_iso}{profile_line}\n\n"
-        "_No automated message was sent. Reach out and welcome them when you're ready._"
+        f"• *Joined channel:* #{channel}\n"
+        f"• *When:* {joined_at_iso}{profile_line}\n\n"
+        "_No automated message was sent. Send them a welcome when you're ready._"
     )
     return dm_poc(client, text)
