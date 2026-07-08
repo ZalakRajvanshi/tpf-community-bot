@@ -209,55 +209,75 @@ def count_replies(digest):
     return sum(len(ch["needs_reply"]) for ch in digest["channels"])
 
 
-def format_daily_report(digest, new_members=None, period_label="today"):
-    """Render the daily report for the POC DM.
+# How many items to show per section before collapsing into "+N more".
+MAX_PER_SECTION = 6
 
-    Sections: new members today, per-channel who-said-what, messages that look
-    out of place, and messages that may need a reply. new_members is a list of
-    readable names (strings).
+
+def _flatten(channels, key):
+    """Flatten a per-channel list into (channel, item) pairs across all channels."""
+    return [(ch["channel"], item) for ch in channels for item in ch[key]]
+
+
+def format_daily_report(digest, new_members=None, period_label="today"):
+    """Render a short, structured daily report for the POC DM.
+
+    Action-first: grouped by concern (reply / out-of-place / noteworthy) with a
+    cap per section, plus new members and a one-line channel activity summary.
     """
+    channels = digest["channels"]
+    replies = _flatten(channels, "needs_reply")
+    out_of_place = _flatten(channels, "out_of_place")
+    noteworthy = _flatten(channels, "highlights")
+
     lines = [f"📋 *Daily report* — {period_label}"]
     lines.append(
-        f"_{digest['total']} message(s) across {len(digest['channels'])} channel(s)._"
+        f"_{digest['total']} messages · {len(channels)} active channel(s) · "
+        f"{len(replies)} may need a reply · {len(out_of_place)} out of place_"
     )
 
-    # --- New members ---------------------------------------------------
-    lines.append("\n🙋 *New members today*")
+    # New members (comma-separated to stay compact).
     if new_members:
-        for name in new_members:
-            lines.append(f"   • {name}")
-        lines.append("   _Reach out and welcome them personally._")
-    else:
-        lines.append("   _No new members today._")
-
-    # --- Per-channel activity -----------------------------------------
-    if not digest["channels"]:
-        lines.append("\n_No channel activity to report._")
-    for ch in digest["channels"]:
         lines.append(
-            f"\n*#{ch['channel']}* — {ch['message_count']} message(s), "
-            f"{ch['active_users']} member(s) active"
+            f"\n🙋 *New members ({len(new_members)}):* " + ", ".join(new_members)
         )
-        if ch["highlights"]:
-            lines.append("  🗣️ *Who said what:*")
-            for item in ch["highlights"]:
-                lines.append(f"   • {item['user']}: {item['text']}")
-        if ch["needs_reply"]:
-            lines.append("  💬 *Might need a reply:*")
-            for item in ch["needs_reply"]:
-                lines.append(f"   • {item['user']}: {item['text']}")
-        if ch["out_of_place"]:
-            lines.append("  ⚠️ *Looks out of place:*")
-            for item in ch["out_of_place"]:
-                lines.append(
-                    f"   • {item['user']}: {item['text']}\n"
-                    f"      ↳ _Why:_ {item['reason']}"
-                )
-        if not (ch["highlights"] or ch["needs_reply"] or ch["out_of_place"]):
-            lines.append("  _Normal activity, nothing flagged._")
+    else:
+        lines.append("\n🙋 *New members:* none today")
 
-    lines.append(
-        "\n_Flags are for your review — nothing was sent or actioned. "
-        "You decide what to do._"
+    def section(title, items, render):
+        if not items:
+            return
+        lines.append(f"\n{title} ({len(items)}):")
+        for channel, item in items[:MAX_PER_SECTION]:
+            lines.append(render(channel, item))
+        extra = len(items) - MAX_PER_SECTION
+        if extra > 0:
+            lines.append(f"   _…and {extra} more_")
+
+    section(
+        "💬 *Might need a reply*",
+        replies,
+        lambda ch, it: f"   • *{it['user']}* in #{ch}: {it['text']}",
     )
+    section(
+        "⚠️ *Out of place*",
+        out_of_place,
+        lambda ch, it: (
+            f"   • *{it['user']}* in #{ch}: {_shorten(it['text'], 160)}\n"
+            f"      ↳ _{it['reason']}_"
+        ),
+    )
+    section(
+        "📢 *Noteworthy*",
+        noteworthy,
+        lambda ch, it: f"   • *{it['user']}* in #{ch}: {it['text']}",
+    )
+
+    # Compact channel activity summary.
+    if channels:
+        activity = " · ".join(
+            f"#{c['channel']} {c['message_count']}" for c in channels
+        )
+        lines.append(f"\n📊 *By channel:* {activity}")
+
+    lines.append("\n_Flags for your review — nothing was actioned. You decide._")
     return "\n".join(lines)
