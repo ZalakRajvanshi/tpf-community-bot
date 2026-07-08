@@ -190,8 +190,15 @@ def peek():
     report window, per channel. Helps confirm the bot can actually read history."""
     if not _authorized(request):
         return jsonify(error="unauthorized"), 401
-    since = time.time() - DAILY_WINDOW_HOURS * 3600
-    return jsonify(collect.channel_report(slack_client, since))
+    now = time.time()
+    since = now - DAILY_WINDOW_HOURS * 3600
+    result = collect.channel_report(slack_client, since)
+    result["debug"] = {
+        "server_now": now,
+        "oldest_epoch": since,
+        "window_hours": DAILY_WINDOW_HOURS,
+    }
+    return jsonify(result)
 
 
 @app.route("/tasks/join-public", methods=["GET", "POST"])
