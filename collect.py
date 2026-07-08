@@ -42,13 +42,13 @@ def _channel_history(client, channel_id, oldest_epoch):
     """Yield real user messages in a channel newer than oldest_epoch."""
     cursor = None
     while True:
+        # Only include cursor when we actually have one — passing cursor=None
+        # makes Slack return nothing.
+        params = {"channel": channel_id, "oldest": str(oldest_epoch), "limit": 200}
+        if cursor:
+            params["cursor"] = cursor
         try:
-            resp = client.conversations_history(
-                channel=channel_id,
-                oldest=str(oldest_epoch),
-                limit=200,
-                cursor=cursor,
-            )
+            resp = client.conversations_history(**params)
         except SlackApiError as e:
             logger.warning(
                 "history failed for %s: %s", channel_id, e.response.get("error")
