@@ -89,14 +89,34 @@ def fetch_recent_messages(client, oldest_epoch):
 
 
 def channel_report(client, oldest_epoch):
-    """Diagnostic: per-channel message counts, for /tasks/peek."""
+    """Diagnostic: per-channel read status, for /tasks/peek.
+
+    For each member channel it reports any read error, the timestamp of the most
+    recent message (regardless of window), and how many messages fall inside the
+    window — so we can tell "quiet window" from "can't read history".
+    """
     per_channel = []
     total = 0
     for channel_id in _member_channels(client):
-        count = sum(1 for _ in _channel_history(client, channel_id, oldest_epoch))
-        per_channel.append({"channel_id": channel_id, "messages": count})
-        total += count
-    per_channel.sort(key=lambda c: c["messages"], reverse=True)
+        entry = {"channel_id": channel_id}
+        try:
+            # Latest message regardless of time — proves history is readable.
+            latest = client.conversations_history(channel=channel_id, limit=1)
+            lm = latest.get("messages", [])
+            entry["latest_ts"] = lm[0].get("ts") if lm else None
+            # Messages inside the report window.
+            windowed = client.conversations_history(
+                channel=channel_id, oldest=str(oldest_epoch), limit=200
+            )
+            wm = windowed.get("messages", [])
+            entry["window_raw"] = len(wm)
+            entry["window_human"] = sum(
+                1 for m in wm if not (m.get("subtype") or m.get("bot_id"))
+            )
+            total += entry["window_human"]
+        except SlackApiError as e:
+            entry["error"] = e.response.get("error")
+        per_channel.append(entry)
     return {
         "member_channels": len(per_channel),
         "total_messages": total,
