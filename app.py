@@ -184,6 +184,16 @@ def daily_report():
     )
 
 
+@app.route("/tasks/peek", methods=["GET", "POST"])
+def peek():
+    """Diagnostic: show how many member channels and messages are visible in the
+    report window, per channel. Helps confirm the bot can actually read history."""
+    if not _authorized(request):
+        return jsonify(error="unauthorized"), 401
+    since = time.time() - DAILY_WINDOW_HOURS * 3600
+    return jsonify(collect.channel_report(slack_client, since))
+
+
 @app.route("/tasks/join-public", methods=["GET", "POST"])
 def join_public_channels():
     """Make the bot join every public channel so it can monitor them all.

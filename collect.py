@@ -76,7 +76,29 @@ def _channel_history(client, channel_id, oldest_epoch):
 def fetch_recent_messages(client, oldest_epoch):
     """Return all real user messages across member channels since oldest_epoch."""
     messages = []
+    channel_count = 0
     for channel_id in _member_channels(client):
+        channel_count += 1
         messages.extend(_channel_history(client, channel_id, oldest_epoch))
-    logger.info("Fetched %d messages for the report window.", len(messages))
+    logger.info(
+        "Scanned %d member channel(s); fetched %d messages for the report window.",
+        channel_count,
+        len(messages),
+    )
     return messages
+
+
+def channel_report(client, oldest_epoch):
+    """Diagnostic: per-channel message counts, for /tasks/peek."""
+    per_channel = []
+    total = 0
+    for channel_id in _member_channels(client):
+        count = sum(1 for _ in _channel_history(client, channel_id, oldest_epoch))
+        per_channel.append({"channel_id": channel_id, "messages": count})
+        total += count
+    per_channel.sort(key=lambda c: c["messages"], reverse=True)
+    return {
+        "member_channels": len(per_channel),
+        "total_messages": total,
+        "per_channel": per_channel,
+    }
