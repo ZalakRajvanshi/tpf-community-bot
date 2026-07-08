@@ -59,18 +59,12 @@ def channel_name_of(client, channel_id):
     return name
 
 
-def dm_poc(client, text):
-    """Send a direct message to the configured Human POC.
-
-    Returns True on success. Logs and returns False if the POC isn't
-    configured or Slack rejects the message.
-    """
-    if not HUMAN_POC_USER_ID:
-        logger.warning("HUMAN_POC_USER_ID is not set — cannot notify the POC.")
+def dm_user(client, user_id, text):
+    """Open (or reuse) a DM with a user and post a message. Returns True/False."""
+    if not user_id:
         return False
     try:
-        # Open (or reuse) the DM channel, then post into it.
-        im = client.conversations_open(users=HUMAN_POC_USER_ID)
+        im = client.conversations_open(users=user_id)
         channel = im["channel"]["id"]
         client.chat_postMessage(
             channel=channel,
@@ -80,38 +74,13 @@ def dm_poc(client, text):
         )
         return True
     except SlackApiError as e:
-        logger.error("Failed to DM the POC: %s", e.response.get("error"))
+        logger.error("Failed to DM %s: %s", user_id, e.response.get("error"))
         return False
 
 
-def notify_new_member(client, user_id, channel_id, joined_at_iso):
-    """DM the POC that a member joined a channel, so they can welcome them.
-
-    Fires in real time at join time and names the channel they joined.
-    """
-    name = display_name_of(client, user_id)
-    channel = channel_name_of(client, channel_id)
-    profile_line = ""
-    try:
-        info = client.users_info(user=user_id).get("user", {})
-        profile = info.get("profile", {})
-        bits = []
-        if profile.get("real_name"):
-            bits.append(profile["real_name"])
-        if profile.get("title"):
-            bits.append(profile["title"])
-        if profile.get("email"):
-            bits.append(profile["email"])
-        if bits:
-            profile_line = "\n   ↳ " + " · ".join(bits)
-    except SlackApiError:
-        pass  # Profile details are best-effort.
-
-    text = (
-        "🙋 *New member joined*\n"
-        f"• *Name:* {name} (<@{user_id}>)\n"
-        f"• *Joined channel:* #{channel}\n"
-        f"• *When:* {joined_at_iso}{profile_line}\n\n"
-        "_No automated message was sent. Send them a welcome when you're ready._"
-    )
-    return dm_poc(client, text)
+def dm_poc(client, text):
+    """Send a direct message to the configured Human POC."""
+    if not HUMAN_POC_USER_ID:
+        logger.warning("HUMAN_POC_USER_ID is not set — cannot notify the POC.")
+        return False
+    return dm_user(client, HUMAN_POC_USER_ID, text)

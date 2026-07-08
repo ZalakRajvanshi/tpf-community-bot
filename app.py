@@ -1,30 +1,30 @@
-"""TPF Community Bot — human-in-the-loop Slack monitoring assistant.
+"""TPF Community Bot — daily community report for the Human POC.
 
-The bot observes Slack activity and gives a designated Human POC the context to
-act. It never messages members or moderates on its own. Its jobs are:
+The bot observes Slack and, once a day, DMs the Human POC a single report:
 
-  1. Watch channel messages and keep a rolling record (for context/digests).
-  2. When a member joins a channel, DM the POC in real time (name + channel) so
-     they can welcome them personally — no automated welcome is ever sent.
-  3. On request, build a per-channel daily digest (what happened in each channel,
-     plus official updates and out-of-place activity) and DM it to the POC.
+  1. New members who joined (so the POC can welcome them personally — the bot
+     never messages members itself).
+  2. Per-channel "who said what" — noteworthy messages with attribution.
+  3. Messages that may need a reply (unanswered questions/requests).
+  4. Messages that look out of place for their channel (with the exact message).
 
-All user-facing decisions stay with the Human POC.
+Everything is a flag for the POC to review — the bot takes no action on users.
 """
 
 import logging
 import os
 import time
-from datetime import datetime, timezone
 
 from dotenv import load_dotenv
 from flask import Flask, jsonify, request
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 
+import ai
+import collect
 import notify
 import store
-from analysis import build_digest, format_digest
+from analysis import build_digest, count_flags, count_replies, format_daily_report
 from slack_verify import is_valid_slack_request
 
 load_dotenv()
@@ -38,7 +38,8 @@ logger = logging.getLogger("tpf-community-bot")
 SLACK_BOT_TOKEN = os.environ.get("SLACK_BOT_TOKEN")
 SLACK_SIGNING_SECRET = os.environ.get("SLACK_SIGNING_SECRET")
 DIGEST_TRIGGER_TOKEN = os.environ.get("DIGEST_TRIGGER_TOKEN")
-DIGEST_WINDOW_HOURS = int(os.environ.get("DIGEST_WINDOW_HOURS", "24"))
+# The daily report covers this many hours of history (default 24).
+DAILY_WINDOW_HOURS = int(os.environ.get("DAILY_WINDOW_HOURS", "24"))
 
 if not SLACK_BOT_TOKEN:
     logger.warning("SLACK_BOT_TOKEN is not set — the bot cannot read or DM.")
@@ -51,13 +52,13 @@ slack_client = WebClient(token=SLACK_BOT_TOKEN)
 
 app = Flask(__name__)
 
-# Persistent store for observed messages and new-member dedup.
+# Persistent store: records who joined (for the daily "new members" section).
 store.init_db()
 
 # Remember processed event IDs so Slack's automatic retries aren't handled twice.
 _processed_events = set()
 
-# Cache of the bot's own user ID so we don't record the bot's own messages.
+# Cache of the bot's own user ID so we don't count the bot as a joiner.
 _bot_user_id = None
 
 
@@ -77,47 +78,15 @@ def get_bot_user_id():
 # --------------------------------------------------------------------------- #
 
 
-def handle_message(event):
-    """Record a real user message for context. Ignore bot/system messages."""
-    # Subtypes (joins, edits, deletes, bot posts...) aren't human conversation.
-    if event.get("subtype") or event.get("bot_id"):
+def handle_new_member(user_id):
+    """Record a new member so they appear in the next daily report.
+
+    The bot does NOT message the member — the POC welcomes them personally.
+    """
+    if not user_id or user_id == get_bot_user_id():
         return
-
-    user_id = event.get("user")
-    channel_id = event.get("channel")
-    if not user_id or not channel_id:
-        return
-    if user_id == get_bot_user_id():
-        return
-
-    store.save_message(
-        channel_id=channel_id,
-        user_id=user_id,
-        text=event.get("text", ""),
-        ts=event.get("ts"),
-    )
-
-
-def handle_member_joined_channel(event):
-    """A member joined a channel — DM the POC in real time so they can welcome
-    them. We never message the member ourselves."""
-    user_id = event.get("user")
-    channel_id = event.get("channel")
-    if not user_id or not channel_id:
-        return
-    if user_id == get_bot_user_id():
-        return  # Don't alert when the bot itself is added to a channel.
-
-    # Dedup against Slack retries: only notify the first time for this pair.
-    if not store.record_join(user_id, channel_id):
-        logger.info(
-            "Already notified POC about %s joining %s; skipping.", user_id, channel_id
-        )
-        return
-
-    joined_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    if notify.notify_new_member(slack_client, user_id, channel_id, joined_at):
-        logger.info("Notified POC: %s joined channel %s.", user_id, channel_id)
+    if store.record_member(user_id):
+        logger.info("Recorded new member %s for the daily report.", user_id)
 
 
 # --------------------------------------------------------------------------- #
@@ -161,47 +130,103 @@ def slack_events():
             _processed_events.add(event_id)
 
         event = payload.get("event", {})
-        event_type = event.get("type")
-
-        if event_type == "message":
-            handle_message(event)
-        elif event_type == "member_joined_channel":
-            handle_member_joined_channel(event)
+        if event.get("type") == "team_join":
+            user = event.get("user", {})
+            handle_new_member(user.get("id") if isinstance(user, dict) else user)
 
     # Always 200 quickly so Slack doesn't retry.
     return jsonify(ok=True)
 
 
-@app.route("/tasks/daily-digest", methods=["GET", "POST"])
-def daily_digest():
-    """Build the daily digest and DM it to the Human POC.
+def _authorized(req):
+    """Token check shared by the task endpoints (open if no token configured)."""
+    if not DIGEST_TRIGGER_TOKEN:
+        return True
+    supplied = req.args.get("token") or req.headers.get("X-Digest-Token")
+    return supplied == DIGEST_TRIGGER_TOKEN
 
-    Triggered manually (or later by a scheduler/cron). Protect it by setting
-    DIGEST_TRIGGER_TOKEN and passing it as ?token=... or an X-Digest-Token
-    header. If the token isn't configured, the endpoint is open (testing only).
+
+@app.route("/tasks/daily-report", methods=["GET", "POST"])
+def daily_report():
+    """Build the daily report and DM it to the Human POC.
+
+    Fetches the last DAILY_WINDOW_HOURS of history live, classifies it (AI if a
+    key is set, else heuristics), lists members who joined in the window, and
+    DMs the POC one combined report. Protect with DIGEST_TRIGGER_TOKEN.
     """
-    if DIGEST_TRIGGER_TOKEN:
-        supplied = request.args.get("token") or request.headers.get("X-Digest-Token")
-        if supplied != DIGEST_TRIGGER_TOKEN:
-            return jsonify(error="unauthorized"), 401
+    if not _authorized(request):
+        return jsonify(error="unauthorized"), 401
 
-    since = time.time() - DIGEST_WINDOW_HOURS * 3600
-    messages = store.get_messages_since(since)
+    since = time.time() - DAILY_WINDOW_HOURS * 3600
 
-    digest = build_digest(
-        messages,
-        channel_name_of=lambda cid: notify.channel_name_of(slack_client, cid),
-        display_name_of=lambda uid: notify.display_name_of(slack_client, uid),
+    # 1. Live history → classify → per-channel breakdown.
+    messages = collect.fetch_recent_messages(slack_client, since)
+    channel_name_of = lambda cid: notify.channel_name_of(slack_client, cid)
+    display_name_of = lambda uid: notify.display_name_of(slack_client, uid)
+    verdicts = ai.classify_messages(messages, channel_name_of)  # None → heuristics
+    digest = build_digest(messages, channel_name_of, display_name_of, verdicts=verdicts)
+
+    # 2. Members who joined in the window.
+    new_member_ids = store.get_members_since(since)
+    new_members = [display_name_of(uid) for uid in new_member_ids]
+
+    text = format_daily_report(
+        digest, new_members=new_members, period_label=f"last {DAILY_WINDOW_HOURS}h"
     )
-    text = format_digest(digest, period_label=f"the last {DIGEST_WINDOW_HOURS} hours")
-
     delivered = notify.dm_poc(slack_client, text)
     return jsonify(
         ok=True,
         delivered_to_poc=delivered,
+        new_members=len(new_members),
         messages_observed=digest["total"],
-        official=len(digest["official"]),
-        out_of_place=len(digest["out_of_place"]),
+        needs_reply=count_replies(digest),
+        out_of_place=count_flags(digest),
+    )
+
+
+@app.route("/tasks/join-public", methods=["GET", "POST"])
+def join_public_channels():
+    """Make the bot join every public channel so it can monitor them all.
+
+    Saves inviting it to ~20+ channels by hand. Private channels can't be
+    self-joined — an admin must invite the bot to those.
+    """
+    if not _authorized(request):
+        return jsonify(error="unauthorized"), 401
+
+    joined, already, failed = [], 0, []
+    cursor = None
+    try:
+        while True:
+            resp = slack_client.conversations_list(
+                types="public_channel",
+                exclude_archived=True,
+                limit=200,
+                cursor=cursor,
+            )
+            for ch in resp.get("channels", []):
+                if ch.get("is_member"):
+                    already += 1
+                    continue
+                try:
+                    slack_client.conversations_join(channel=ch["id"])
+                    joined.append(ch.get("name", ch["id"]))
+                except SlackApiError as e:
+                    failed.append({"channel": ch.get("name"), "error": e.response.get("error")})
+            cursor = resp.get("response_metadata", {}).get("next_cursor")
+            if not cursor:
+                break
+    except SlackApiError as e:
+        return jsonify(ok=False, error=e.response.get("error")), 500
+
+    logger.info("join-public: joined %d, already %d, failed %d",
+                len(joined), already, len(failed))
+    return jsonify(
+        ok=True,
+        joined=joined,
+        joined_count=len(joined),
+        already_member=already,
+        failed=failed,
     )
 
 

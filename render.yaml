@@ -12,12 +12,17 @@ services:
         sync: false
       - key: SLACK_SIGNING_SECRET
         sync: false
-      # Slack user ID of the Human POC who receives all DMs.
+      # Slack user ID of the Human POC who receives the daily report.
       - key: HUMAN_POC_USER_ID
         sync: false
-      # Shared secret protecting the /tasks/daily-digest trigger.
+      # Shared secret protecting the /tasks/* triggers.
       - key: DIGEST_TRIGGER_TOKEN
         sync: false
-      # Hours of history the digest covers (safe to commit a default).
-      - key: DIGEST_WINDOW_HOURS
+      # Hours of history the daily report covers (safe to commit a default).
+      - key: DAILY_WINDOW_HOURS
         value: "24"
+      # Optional OpenAI key for smarter report classification.
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENAI_MODEL
+        value: gpt-4o-mini
