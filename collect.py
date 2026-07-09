@@ -44,7 +44,9 @@ def _channel_history(client, channel_id, oldest_epoch):
     while True:
         # Only include cursor when we actually have one — passing cursor=None
         # makes Slack return nothing.
-        params = {"channel": channel_id, "oldest": str(oldest_epoch), "limit": 200}
+        # Slack ts must be seconds.microseconds with exactly 6 decimals — a raw
+        # str(float) can produce 7+ digits, which Slack silently treats as no match.
+        params = {"channel": channel_id, "oldest": f"{oldest_epoch:.6f}", "limit": 200}
         if cursor:
             params["cursor"] = cursor
         try:
@@ -106,7 +108,7 @@ def channel_report(client, oldest_epoch):
             entry["latest_ts"] = lm[0].get("ts") if lm else None
             # Messages inside the report window.
             windowed = client.conversations_history(
-                channel=channel_id, oldest=str(oldest_epoch), limit=200
+                channel=channel_id, oldest=f"{oldest_epoch:.6f}", limit=200
             )
             wm = windowed.get("messages", [])
             entry["window_raw"] = len(wm)
