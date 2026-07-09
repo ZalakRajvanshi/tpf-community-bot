@@ -166,9 +166,9 @@ def daily_report():
     verdicts = ai.classify_messages(messages, channel_name_of)  # None → heuristics
     digest = build_digest(messages, channel_name_of, display_name_of, verdicts=verdicts)
 
-    # 2. Members who joined in the window.
+    # 2. Members who joined in the window (as clickable mentions).
     new_member_ids = store.get_members_since(since)
-    new_members = [display_name_of(uid) for uid in new_member_ids]
+    new_members = [f"<@{uid}>" for uid in new_member_ids]
 
     text = format_daily_report(
         digest, new_members=new_members, period_label=f"last {DAILY_WINDOW_HOURS}h"

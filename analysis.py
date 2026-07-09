@@ -146,7 +146,8 @@ def build_digest(messages, channel_name_of, display_name_of, verdicts=None):
     for idx, m in enumerate(messages):
         channel_id = m.get("channel_id")
         channel = channel_name_of(channel_id)
-        user = display_name_of(m.get("user_id"))
+        user_id = m.get("user_id")
+        user = display_name_of(user_id)
         text = (m.get("text") or "").strip()
 
         bucket = by_channel.setdefault(
@@ -168,19 +169,24 @@ def build_digest(messages, channel_name_of, display_name_of, verdicts=None):
 
         # Who said what — surface noteworthy/official messages with attribution.
         if verdict.get("official"):
-            bucket["highlights"].append({"user": user, "text": _shorten(text)})
+            bucket["highlights"].append(
+                {"user_id": user_id, "user": user, "text": _shorten(text)}
+            )
 
         # Out-of-place — exact message so the POC can judge it.
         if verdict.get("out_of_place"):
             bucket["out_of_place"].append(
-                {"user": user, "text": text, "reason": verdict["out_of_place"]}
+                {"user_id": user_id, "user": user, "text": text,
+                 "reason": verdict["out_of_place"]}
             )
 
         # Needs a reply — only flag if it hasn't already been answered in a
         # thread (reply_count == 0). Channel replies can't be detected, so this
         # may still include some that got an inline answer.
         if verdict.get("needs_reply") and not m.get("reply_count"):
-            bucket["needs_reply"].append({"user": user, "text": _shorten(text)})
+            bucket["needs_reply"].append(
+                {"user_id": user_id, "user": user, "text": _shorten(text)}
+            )
 
     channels = []
     for bucket in by_channel.values():
@@ -243,6 +249,11 @@ def format_daily_report(digest, new_members=None, period_label="today"):
     else:
         lines.append("\n🙋 *New members:* none today")
 
+    def who(item):
+        # Clickable @mention so the POC can see exactly who sent it; fall back
+        # to the resolved name if we somehow don't have an id.
+        return f"<@{item['user_id']}>" if item.get("user_id") else f"*{item['user']}*"
+
     def section(title, items, render):
         if not items:
             return
@@ -256,20 +267,20 @@ def format_daily_report(digest, new_members=None, period_label="today"):
     section(
         "💬 *Might need a reply*",
         replies,
-        lambda ch, it: f"   • *{it['user']}* in #{ch}: {it['text']}",
+        lambda ch, it: f"   • {who(it)} in #{ch}: {it['text']}",
     )
     section(
         "⚠️ *Out of place*",
         out_of_place,
         lambda ch, it: (
-            f"   • *{it['user']}* in #{ch}: {_shorten(it['text'], 160)}\n"
+            f"   • {who(it)} in #{ch}: {_shorten(it['text'], 160)}\n"
             f"      ↳ _{it['reason']}_"
         ),
     )
     section(
         "📢 *Noteworthy*",
         noteworthy,
-        lambda ch, it: f"   • *{it['user']}* in #{ch}: {it['text']}",
+        lambda ch, it: f"   • {who(it)} in #{ch}: {it['text']}",
     )
 
     # Compact channel activity summary.
